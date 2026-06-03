@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pron-mcp"
+version = "0.4.0"
+description = "Microsoft 365 Outlook integration MCP server for Claude"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Pron MCP Contributors" }]
+
+dependencies = [
+    "mcp>=1.2.0",           # MCP Python SDK
+    "msal>=1.28.0",         # Microsoft Authentication Library
+    "httpx>=0.27.0",        # async HTTP client for Graph API
+    "pydantic>=2.6.0",      # data validation
+    "python-dotenv>=1.0.0", # .env loading for local dev
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+pron-mcp = "pron_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pron_mcp*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
