@@ -1,4 +1,4 @@
-"""후이즈메일(whoisworks.com 호스팅) 연동 도구.
+"""외부 메일 계정(POP3/SMTP) 연동 도구.
 
 계정 정보는 SSE 연결 시 헤더(X-Whois-Email, X-Whois-Password)로 전달되며
 서버가 연결별 ContextVar(whois_credentials)에 저장합니다. 동시 접속자끼리
@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import poplib
 import smtplib
 import ssl
@@ -21,16 +22,39 @@ from pydantic import Field
 
 from pron_mcp.session import whois_credentials
 
-POP3_HOST = "pop.whoisworks.com"
-POP3_PORT = 995
-SMTP_HOST = "smtp.whoisworks.com"
-SMTP_PORT = 587
+DEFAULT_PORTS = {"POP3": 995, "SMTP": 587}
 
 
-def _legacy_ssl_context() -> ssl.SSLContext:
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+def _mail_server(kind: str) -> tuple[str, int]:
+    """메일 서버 주소를 환경변수에서 읽는다. kind 는 "POP3" 또는 "SMTP".
+
+    호스트는 배포 환경마다 다르므로 하드코딩하지 않고 `WHOIS_POP3_HOST`,
+    `WHOIS_SMTP_HOST` 로 주입한다. 포트는 생략하면 표준 포트를 쓴다.
+    """
+    host = os.environ.get(f"WHOIS_{kind}_HOST", "").strip()
+    if not host:
+        raise ValueError(
+            f"후이즈메일 {kind} 서버가 설정되지 않았습니다. 환경변수(.env)에 "
+            f"WHOIS_{kind}_HOST 를 지정하세요 (예: WHOIS_{kind}_HOST=mail.example.com)."
+        )
+    port = int(os.environ.get(f"WHOIS_{kind}_PORT", str(DEFAULT_PORTS[kind])))
+    return host, port
+
+
+def _pop3_ssl_context() -> ssl.SSLContext:
+    """POP3S 용 — 인증서·호스트명 검증을 모두 유지하는 기본 컨텍스트."""
+    return ssl.create_default_context()
+
+
+def _smtp_ssl_context() -> ssl.SSLContext:
+    """SMTP STARTTLS 용 — 검증은 유지하고 암호 강도만 완화한다.
+
+    일부 메일 서버는 작은 DH 파라미터를 사용해 OpenSSL 기본 보안 수준(SECLEVEL=2)에서
+    핸드셰이크가 `DH_KEY_TOO_SMALL` 로 실패한다. 이때 필요한 최소 조치는 보안 수준을
+    1로 낮추는 것뿐이며, 인증서·호스트명 검증은 그대로 유지해 중간자 공격 방어를
+    포기하지 않는다.
+    """
+    ctx = ssl.create_default_context()
     ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
     return ctx
 
@@ -97,7 +121,8 @@ def _parse_email_message(raw_lines: list[bytes]) -> dict[str, Any]:
 
 
 def _pop3_connect(email_addr: str, password: str) -> poplib.POP3_SSL:
-    pop = poplib.POP3_SSL(POP3_HOST, POP3_PORT, context=_legacy_ssl_context())
+    host, port = _mail_server("POP3")
+    pop = poplib.POP3_SSL(host, port, context=_pop3_ssl_context())
     pop.user(email_addr)
     try:
         pop.pass_(password)
@@ -214,10 +239,11 @@ def register(mcp: FastMCP) -> None:
         bcc_self = [email_addr]
         all_recipients = to + (cc or []) + bcc_self
 
-        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        host, port = _mail_server("SMTP")
+        smtp = smtplib.SMTP(host, port, timeout=30)
         try:
             smtp.ehlo()
-            smtp.starttls(context=_legacy_ssl_context())
+            smtp.starttls(context=_smtp_ssl_context())
             smtp.ehlo()
             smtp.login(email_addr, pwd)
             smtp.sendmail(email_addr, all_recipients, msg.as_string())

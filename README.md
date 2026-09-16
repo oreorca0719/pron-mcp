@@ -133,8 +133,13 @@ Graph 인증·HTTP 클라이언트·Streamable HTTP 세션 매니저는 **서버
 | `delete_contact` | 연락처 삭제(명시 승인 필수) |
 | `search_people` | 조직 내 사람 검색 |
 
-### 후이즈메일 (`tools/whois_email.py`)
-회사 메일이 후이즈메일(whoisworks.com 호스팅)에 있는 경우를 위한 POP3/SMTP 연동.
+### 메일 서버 연동 (`tools/whois_email.py`)
+Microsoft 365 바깥의 메일 계정을 POP3/SMTP로 직접 다루기 위한 도구.
+서버 주소는 환경변수로 주입한다(`WHOIS_POP3_HOST`, `WHOIS_SMTP_HOST`, 포트는 선택).
+
+TLS는 **인증서·호스트명 검증을 유지**한다. 다만 서버가 작은 DH 파라미터를 쓰는 경우
+STARTTLS 핸드셰이크가 `DH_KEY_TOO_SMALL`로 실패하므로, SMTP 경로에 한해 OpenSSL
+보안 수준만 1로 낮춘다(검증 자체는 끄지 않는다).
 계정은 요청 헤더(`X-Whois-Email`, `X-Whois-Password`)로 사용자별 전달한다.
 Streamable HTTP는 매 요청마다, SSE는 연결 시점에 추출해 `ContextVar`에 보관하므로
 동시 접속자끼리 계정이 섞이지 않는다. 두 헤더는 **반드시 쌍으로** 전달해야 한다
@@ -245,5 +250,5 @@ pytest
 
 ## 라이선스
 
-Proprietary — 사내 사용 목적. (`pyproject.toml` 참고)
+[MIT](LICENSE).
 </content>

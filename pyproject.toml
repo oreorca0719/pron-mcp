@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pron-mcp"
 version = "0.4.0"
-description = "Microsoft 365 Outlook integration MCP server for Claude"
+description = "Microsoft 365 + POP3/SMTP integration MCP server with per-session credential isolation"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary" }
-authors = [{ name = "Pron MCP Contributors" }]
+license = "MIT"
+authors = [{ name = "oreorca0719" }]
 
 dependencies = [
     "mcp>=1.2.0",           # MCP Python SDK
