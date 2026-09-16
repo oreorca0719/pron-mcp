@@ -20,26 +20,51 @@ Claude(또는 다른 MCP 클라이언트)가 회사 메일·캘린더·Teams·Sh
 ## 아키텍처
 
 ```
-MCP 클라이언트 (Claude Desktop 등)
-        │  SSE / stdio
+MCP 클라이언트 (Claude Code / Claude Desktop 등)
+        │  Streamable HTTP (/mcp)  ·  SSE (/sse)  ·  stdio
         ▼
-  pron_mcp.server         ── ASGI 앱: /sse, /messages/ 라우팅
-        │                    SSE 연결 헤더에서 후이즈 자격증명 추출 → ContextVar
-        ├─ auth.OutlookAuth  ── MSAL public client + device code flow + 토큰 캐시
-        ├─ graph_client      ── Microsoft Graph API HTTP 래퍼 (Bearer 자동 주입)
+  pron_mcp.server         ── ASGI 앱: /mcp, /sse, /messages/ 라우팅
+        │                    요청·연결 헤더에서 후이즈 자격증명 추출 → ContextVar
+        │
+        ├─ [프로세스 시작 시 1회] _startup_backend()
+        │     ├─ auth.OutlookAuth  ── MSAL public client + 토큰 캐시(silent 갱신)
+        │     ├─ graph_client      ── Microsoft Graph API HTTP 래퍼 (Bearer 자동 주입)
+        │     └─ StreamableHTTPSessionManager (stateless)
+        │
         └─ tools/*           ── 도메인별 도구 등록 (메일·캘린더·Teams·파일·연락처·후이즈)
 ```
 
 | 구성 요소 | 파일 | 역할 |
 |---|---|---|
-| 서버 엔트리 | `pron_mcp/server.py` | SSE/stdio 전송, 세션별 자격증명 주입 |
+| 서버 엔트리 | `pron_mcp/server.py` | Streamable HTTP/SSE/stdio 전송, 세션별 자격증명 주입, 백엔드 1회 초기화 |
 | 인증 | `pron_mcp/auth.py` | Entra ID device code flow, 토큰 캐시(0600) |
 | Graph 클라이언트 | `pron_mcp/graph_client.py` | Graph API 호출 + 에러를 행동 가능한 메시지로 변환 |
 | 세션 저장소 | `pron_mcp/session.py` | 후이즈 자격증명용 `ContextVar` |
 | 도구 모듈 | `pron_mcp/tools/` | 아래 표의 도구들 |
 
-전송 방식은 환경변수 `MCP_TRANSPORT`로 선택한다. 기본값 `sse`(사내 서버 배포용),
-`stdio`(로컬 단독 실행용).
+### 전송 방식
+
+환경변수 `MCP_TRANSPORT`로 선택한다. 기본값 `sse`(서버 배포용) — 이 경우 아래 **두
+HTTP 엔드포인트를 동시에** 제공한다. `stdio`로 두면 로컬 단독 실행 모드가 된다.
+
+| 엔드포인트 | 전송 | 용도 |
+|---|---|---|
+| `/mcp` | **Streamable HTTP** (stateless) | **권장.** `claude mcp add --transport http` 로 바로 연결. 프록시 불필요 |
+| `/sse` + `/messages/` | 구식 HTTP+SSE | 기존 `mcp-remote` 기반 클라이언트 호환용 |
+
+`/mcp`는 stateless라 요청마다 독립 세션으로 처리되며, 자격증명 헤더가 매 요청에
+실려 오므로 동시 사용자 간 격리가 자연스럽게 보장된다.
+
+### 백엔드 초기화 (성능)
+
+Graph 인증·HTTP 클라이언트·세션 매니저는 **서버 프로세스당 1회만** 생성한다
+(`_startup_backend()`, ASGI `lifespan.startup`에서 호출). 연결마다 인증을 반복하면
+동시 접속·재연결이 몰릴 때 handshake가 수 초까지 늘어나 클라이언트 시작 타임아웃을
+유발하기 때문이다. 연결별 `app_lifespan`은 공유 자원을 넘겨주기만 한다.
+
+서버 프로세스는 헤드리스로 동작하므로 `get_access_token()`은 기본적으로
+`allow_interactive=False`이다. 캐시가 만료되면 device code 흐름으로 빠져 이벤트 루프를
+막는 대신 **즉시 명확한 오류**를 낸다. 재인증은 `python test_auth.py`로 별도 수행한다.
 
 ## 보안 원칙
 
@@ -53,7 +78,7 @@ MCP 클라이언트 (Claude Desktop 등)
 
 ## 제공 도구
 
-총 36개 도구를 6개 카테고리로 제공한다.
+총 37개 도구를 6개 카테고리로 제공한다.
 
 ### 메일 (`tools/send_email.py`)
 | 도구 | 설명 | 안전성 |
@@ -110,7 +135,10 @@ MCP 클라이언트 (Claude Desktop 등)
 
 ### 후이즈메일 (`tools/whois_email.py`)
 회사 메일이 후이즈메일(whoisworks.com 호스팅)에 있는 경우를 위한 POP3/SMTP 연동.
-계정은 SSE 연결 헤더(`X-Whois-Email`, `X-Whois-Password`)로 사용자별 전달한다.
+계정은 요청 헤더(`X-Whois-Email`, `X-Whois-Password`)로 사용자별 전달한다.
+Streamable HTTP는 매 요청마다, SSE는 연결 시점에 추출해 `ContextVar`에 보관하므로
+동시 접속자끼리 계정이 섞이지 않는다. 두 헤더는 **반드시 쌍으로** 전달해야 한다
+(한쪽만 오면 무시 — 짝이 깨진 자격증명으로 인증 실패하는 것을 막기 위함).
 
 | 도구 | 설명 | 안전성 |
 |---|---|---|
@@ -145,10 +173,50 @@ python -m pron_mcp                 # 서버 실행
    `Contacts.ReadWrite`, `User.Read`, `offline_access` 등 사용할 도구에 맞게 추가
 3. **개요**에서 테넌트 ID·클라이언트 ID를 `.env`에 입력
 
-### Claude Desktop 연결
+## 클라이언트 연결
 
-`claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`,
-Windows: `%APPDATA%\Claude\`):
+서버를 한 대 띄워두고 팀원들이 각자 PC에서 붙는 구성을 가정한다.
+아래 `<SERVER_HOST>`는 서버가 떠 있는 호스트(예: 사내 IP)로 바꾼다.
+
+### 방법 A — 한 줄로 등록 (권장)
+
+Claude Code CLI가 있으면 터미널에서 한 줄이면 끝난다. 프록시(`mcp-remote`)나
+Node 설치가 필요 없다.
+
+```bash
+claude mcp add --scope user --transport http pron-mcp http://<SERVER_HOST>:8000/mcp   --header "X-Whois-Email:<본인계정>"   --header "X-Whois-Password:<본인비밀번호>"
+```
+
+- `--scope user`를 빼면 **현재 폴더에서만** 적용되니 주의.
+- Windows PowerShell/cmd에서는 줄바꿈(`\`) 없이 **한 줄로** 붙여넣는다.
+- 비밀번호에 `^`가 있으면 cmd가 이스케이프 문자로 먹어버리므로 **방법 B**를 쓴다.
+
+### 방법 B — 설정 파일 직접 편집 (CLI 불필요)
+
+`~/.claude.json` (Windows: `%USERPROFILE%\.claude.json`)의 `mcpServers`에 추가:
+
+```json
+{
+  "mcpServers": {
+    "pron-mcp": {
+      "type": "http",
+      "url": "http://<SERVER_HOST>:8000/mcp",
+      "headers": {
+        "X-Whois-Email": "<본인계정>",
+        "X-Whois-Password": "<본인비밀번호>"
+      }
+    }
+  }
+}
+```
+
+저장 후 클라이언트를 완전히 종료했다가 다시 실행한다.
+비밀번호에 특수문자가 있어도 셸 이스케이프 문제가 없어 이 방법이 더 안전하다.
+
+### 방법 C — 로컬 stdio 실행
+
+서버를 원격에 두지 않고 클라이언트가 직접 프로세스를 띄우는 방식.
+이 경우 HTTP 헤더가 없으므로 **후이즈메일 도구는 사용할 수 없다**(Graph 도구는 정상).
 
 ```json
 {
@@ -157,6 +225,7 @@ Windows: `%APPDATA%\Claude\`):
       "command": "python",
       "args": ["-m", "pron_mcp"],
       "env": {
+        "MCP_TRANSPORT": "stdio",
         "AZURE_TENANT_ID": "<YOUR_TENANT_ID>",
         "AZURE_CLIENT_ID": "<YOUR_CLIENT_ID>"
       }
