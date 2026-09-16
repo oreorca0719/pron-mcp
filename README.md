@@ -37,34 +37,34 @@ MCP 클라이언트 (Claude Code / Claude Desktop 등)
 | 구성 요소 | 파일 | 역할 |
 |---|---|---|
 | 서버 엔트리 | `pron_mcp/server.py` | Streamable HTTP/SSE/stdio 전송, 세션별 자격증명 주입, 백엔드 1회 초기화 |
-| 인증 | `pron_mcp/auth.py` | Entra ID device code flow, 토큰 캐시(0600) |
+| 인증 | `pron_mcp/auth.py` | Entra ID 토큰 획득(캐시 silent 갱신, 0600). device code 흐름은 `allow_interactive=True`일 때만 |
 | Graph 클라이언트 | `pron_mcp/graph_client.py` | Graph API 호출 + 에러를 행동 가능한 메시지로 변환 |
 | 세션 저장소 | `pron_mcp/session.py` | 후이즈 자격증명용 `ContextVar` |
 | 도구 모듈 | `pron_mcp/tools/` | 아래 표의 도구들 |
 
 ### 전송 방식
 
-환경변수 `MCP_TRANSPORT`로 선택한다. 기본값 `sse`(서버 배포용) — 이 경우 아래 **두
-HTTP 엔드포인트를 동시에** 제공한다. `stdio`로 두면 로컬 단독 실행 모드가 된다.
+환경변수 `MCP_TRANSPORT`로 선택한다. 기본값 `sse`는 서버 배포용으로, 아래 **두 HTTP
+엔드포인트를 동시에** 제공한다. `stdio`는 클라이언트가 프로세스를 직접 띄우는 모드다.
 
 | 엔드포인트 | 전송 | 용도 |
 |---|---|---|
-| `/mcp` | **Streamable HTTP** (stateless) | **권장.** `claude mcp add --transport http` 로 바로 연결. 프록시 불필요 |
-| `/sse` + `/messages/` | 구식 HTTP+SSE | 기존 `mcp-remote` 기반 클라이언트 호환용 |
+| `/mcp` | **Streamable HTTP** (stateless) | 권장. `claude mcp add --transport http` 로 직접 연결(프록시 불필요) |
+| `/sse` + `/messages/` | HTTP+SSE (레거시) | `mcp-remote` 등 SSE 전송을 쓰는 클라이언트용 |
 
 `/mcp`는 stateless라 요청마다 독립 세션으로 처리되며, 자격증명 헤더가 매 요청에
 실려 오므로 동시 사용자 간 격리가 자연스럽게 보장된다.
 
-### 백엔드 초기화 (성능)
+### 초기화와 인증
 
-Graph 인증·HTTP 클라이언트·세션 매니저는 **서버 프로세스당 1회만** 생성한다
-(`_startup_backend()`, ASGI `lifespan.startup`에서 호출). 연결마다 인증을 반복하면
-동시 접속·재연결이 몰릴 때 handshake가 수 초까지 늘어나 클라이언트 시작 타임아웃을
-유발하기 때문이다. 연결별 `app_lifespan`은 공유 자원을 넘겨주기만 한다.
+Graph 인증·HTTP 클라이언트·Streamable HTTP 세션 매니저는 **서버 프로세스당 1회만**
+생성한다. ASGI `lifespan.startup`에서 `_startup_backend()`가 호출되어 이들을 모듈 전역에
+보관하고, 연결별 `app_lifespan`은 그 공유 자원을 넘겨주기만 한다. stdio 모드에서는
+첫 연결 시 지연 초기화된다.
 
-서버 프로세스는 헤드리스로 동작하므로 `get_access_token()`은 기본적으로
-`allow_interactive=False`이다. 캐시가 만료되면 device code 흐름으로 빠져 이벤트 루프를
-막는 대신 **즉시 명확한 오류**를 낸다. 재인증은 `python test_auth.py`로 별도 수행한다.
+서버는 헤드리스로 동작하므로 `get_access_token()`의 기본값은 `allow_interactive=False`다.
+토큰 캐시가 만료되면 device code 흐름으로 진입하지 않고 즉시 오류를 반환한다.
+재인증은 `python test_auth.py`로 수행한다.
 
 ## 보안 원칙
 
@@ -187,7 +187,7 @@ Node 설치가 필요 없다.
 claude mcp add --scope user --transport http pron-mcp http://<SERVER_HOST>:8000/mcp   --header "X-Whois-Email:<본인계정>"   --header "X-Whois-Password:<본인비밀번호>"
 ```
 
-- `--scope user`를 빼면 **현재 폴더에서만** 적용되니 주의.
+- `--scope user`를 빼면 현재 폴더에서만 적용된다.
 - Windows PowerShell/cmd에서는 줄바꿈(`\`) 없이 **한 줄로** 붙여넣는다.
 - 비밀번호에 `^`가 있으면 cmd가 이스케이프 문자로 먹어버리므로 **방법 B**를 쓴다.
 
